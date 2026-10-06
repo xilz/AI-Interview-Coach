@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useState, type KeyboardEvent, type ReactNode, useEffect } from 'react'
 import { Link, Route, Routes, useNavigate } from 'react-router-dom'
 import './App.css'
 
@@ -47,50 +47,842 @@ function Home() {
 
 function Upload() {
   const navigate = useNavigate()
+
   const [file, setFile] = useState<File | null>(null)
   const [role, setRole] = useState('')
   const [round, setRound] = useState('')
   const [company, setCompany] = useState('')
-  return <div className="form-page"><div className="breadcrumbs"><Link to="/">Workspace</Link><Icon name="chevron" size={14}/><span>New interview</span></div><div className="form-heading"><div className="eyebrow">INTERVIEW REVIEW</div><h1>Upload an interview</h1><p>Add a recording and a little context to get started.</p></div>
-    <form className="upload-form" onSubmit={(e) => { e.preventDefault(); navigate('/processing') }}>
-      <div className="field-block"><label>Interview recording <span className="required">Required</span></label><label className={`dropzone ${file ? 'has-file' : ''}`}><input type="file" accept="audio/*,video/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)}/>{file ? <><span className="file-icon"><Icon name="upload"/></span><span className="file-info"><strong>{file.name}</strong><small>{(file.size / (1024 * 1024)).toFixed(1)} MB · Ready to analyze</small></span><span className="change-file">Change</span></> : <><span className="upload-icon"><Icon name="upload" size={20}/></span><span><strong>Choose a file or drag it here</strong><small>MP3, WAV, M4A, MP4 · Up to 500 MB</small></span></>}</label></div>
-      <div className="field-row"><div className="field-block"><label htmlFor="position">Position <span className="required">Required</span></label><select id="position" value={role} onChange={(e) => setRole(e.target.value)} required><option value="" disabled>Select a position</option><option>AI Product Manager</option><option>Software Engineer</option><option>Data Analyst</option><option>Other</option></select></div><div className="field-block"><label htmlFor="round">Interview round <span className="required">Required</span></label><select id="round" value={round} onChange={(e) => setRound(e.target.value)} required><option value="" disabled>Select a round</option>{['Round 1', 'Round 2', 'Final Round', 'HR Interview', 'Technical Interview', 'Case Interview'].map(x => <option key={x}>{x}</option>)}</select></div></div>
-      <div className="field-block"><label htmlFor="company">Company <span className="optional">Optional</span></label><input id="company" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. Acme"/></div>
-      <div className="field-block"><label htmlFor="jd">Job description <span className="optional">Optional</span></label><textarea id="jd" rows={4} placeholder="Paste the job description to give your interview review more context."/><small className="field-help">Used as context for your interview review.</small></div>
-      <div className="form-actions"><button type="button" className="secondary-button" onClick={() => navigate('/')}>Cancel</button><button className="primary-button" type="submit" disabled={!file || !role || !round}>Start analysis <Icon name="chevron" size={16}/></button></div>
-    </form>
-  </div>
+  const [jd, setJd] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!file || !role || !round) {
+      return
+    }
+
+    setUploading(true)
+    setError('')
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch('http://127.0.0.1:8000/api/interviews/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        throw new Error('Upload failed')
+      }
+
+      const data = await response.json()
+
+      console.log('Upload result:', data)
+
+      // 暂时把分析结果保存下来，后面的 Processing 页面会继续使用
+      sessionStorage.setItem(
+        'interviewData',
+        JSON.stringify({
+          filename: data.filename,
+          transcript: data.transcript,
+          role,
+          round,
+          company,
+          jd,
+        })
+      )
+
+      navigate('/processing')
+    } catch (err) {
+      console.error('Upload error:', err)
+      if (err instanceof Error) {
+        setError(`Upload failed: ${err.message}`)
+      } else {
+        setError('Upload failed. Please check the browser console.')
+      }
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="form-page">
+      <div className="breadcrumbs">
+        <Link to="/">Workspace</Link>
+        <Icon name="chevron" size={14} />
+        <span>New interview</span>
+      </div>
+
+      <div className="form-heading">
+        <div className="eyebrow">INTERVIEW REVIEW</div>
+        <h1>Upload an interview</h1>
+        <p>Add a recording and a little context to get started.</p>
+      </div>
+
+      <form className="upload-form" onSubmit={handleSubmit}>
+        <div className="field-block">
+          <label>
+            Interview recording <span className="required">Required</span>
+          </label>
+
+          <label className={`dropzone ${file ? 'has-file' : ''}`}>
+            <input
+              type="file"
+              accept="audio/*,video/*"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+
+            {file ? (
+              <>
+                <span className="file-icon">
+                  <Icon name="upload" />
+                </span>
+
+                <span className="file-info">
+                  <strong>{file.name}</strong>
+                  <small>
+                    {(file.size / (1024 * 1024)).toFixed(1)} MB · Ready to analyze
+                  </small>
+                </span>
+
+                <span className="change-file">Change</span>
+              </>
+            ) : (
+              <>
+                <span className="upload-icon">
+                  <Icon name="upload" size={20} />
+                </span>
+
+                <span>
+                  <strong>Choose a file or drag it here</strong>
+                  <small>MP3, WAV, M4A, MP4 · Up to 500 MB</small>
+                </span>
+              </>
+            )}
+          </label>
+        </div>
+
+        <div className="field-row">
+          <div className="field-block">
+            <label htmlFor="position">
+              Position <span className="required">Required</span>
+            </label>
+
+            <select
+              id="position"
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              required
+            >
+              <option value="" disabled>
+                Select a position
+              </option>
+              <option>AI Product Manager</option>
+              <option>Software Engineer</option>
+              <option>Data Analyst</option>
+              <option>Other</option>
+            </select>
+          </div>
+
+          <div className="field-block">
+            <label htmlFor="round">
+              Interview round <span className="required">Required</span>
+            </label>
+
+            <select
+              id="round"
+              value={round}
+              onChange={(e) => setRound(e.target.value)}
+              required
+            >
+              <option value="" disabled>
+                Select a round
+              </option>
+
+              {[
+                'Round 1',
+                'Round 2',
+                'Final Round',
+                'HR Interview',
+                'Technical Interview',
+                'Case Interview',
+              ].map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="field-block">
+          <label htmlFor="company">
+            Company <span className="optional">Optional</span>
+          </label>
+
+          <input
+            id="company"
+            value={company}
+            onChange={(e) => setCompany(e.target.value)}
+            placeholder="e.g. Acme"
+          />
+        </div>
+
+        <div className="field-block">
+          <label htmlFor="jd">
+            Job description <span className="optional">Optional</span>
+          </label>
+
+          <textarea
+            id="jd"
+            rows={4}
+            value={jd}
+            onChange={(e) => setJd(e.target.value)}
+            placeholder="Paste the job description to give your interview review more context."
+          />
+
+          <small className="field-help">
+            Used as context for your interview review.
+          </small>
+        </div>
+
+        {error && (
+          <div className="error-message">
+            {error}
+          </div>
+        )}
+
+        <div className="form-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => navigate('/')}
+            disabled={uploading}
+          >
+            Cancel
+          </button>
+
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={!file || !role || !round || uploading}
+          >
+            {uploading ? 'Uploading...' : 'Start analysis'}
+            {!uploading && <Icon name="chevron" size={16} />}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
 }
 
-function Processing() { return <div className="processing-view"><div className="processing-icon"><Icon name="spark" size={24}/></div><h1>Preparing your interview review</h1><p>This usually takes a few minutes. You can stay here while we work.</p><div className="processing-steps">{['Processing audio', 'Generating transcript', 'Identifying questions and answers', 'Analyzing interview responses', 'Preparing interview review'].map((step, i) => <div key={step} className={`processing-step ${i === 0 ? 'active' : ''}`}><span className="step-indicator">{i === 0 ? <span className="spinner"/> : i + 1}</span><span>{step}</span>{i === 0 && <small>In progress</small>}</div>)}</div><Link to="/interview/demo" className="mock-link">Preview a sample interview review <Icon name="chevron" size={14}/></Link></div> }
+function Processing() {
+  const navigate = useNavigate()
+
+  const [currentStep, setCurrentStep] = useState(0)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const runAnalysis = async () => {
+      try {
+        const storedData = sessionStorage.getItem('interviewData')
+
+        if (!storedData) {
+          throw new Error('Interview data not found')
+        }
+
+        const interviewData = JSON.parse(storedData)
+
+        if (!interviewData.transcript) {
+          throw new Error('Transcript not found')
+        }
+
+        // Step 1: Processing audio
+        setCurrentStep(0)
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
+        // Step 2: Generating transcript
+        setCurrentStep(1)
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
+        // Step 3: Identifying questions and answers
+        setCurrentStep(2)
+
+        const response = await fetch(
+          'http://127.0.0.1:8000/api/interviews/analyze',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              transcript: interviewData.transcript,
+            }),
+          }
+        )
+
+        if (!response.ok) {
+          throw new Error('Interview analysis failed')
+        }
+
+        const analysisData = await response.json()
+
+        // Step 4: Analyzing interview responses
+        setCurrentStep(3)
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
+        // Step 5: Preparing interview review
+        setCurrentStep(4)
+
+        // Save the real analysis result
+        sessionStorage.setItem(
+          'interviewAnalysis',
+          JSON.stringify({
+            ...interviewData,
+            analysis: analysisData,
+          })
+        )
+
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
+        // Go to the interview review page
+        navigate('/interview/demo')
+      } catch (err) {
+        console.error('Analysis error:', err)
+
+        if (err instanceof Error) {
+          setError(err.message)
+        } else {
+          setError('Failed to analyze the interview')
+        }
+      }
+    }
+
+    runAnalysis()
+  }, [navigate])
+
+  const steps = [
+    'Processing audio',
+    'Generating transcript',
+    'Identifying questions and answers',
+    'Analyzing interview responses',
+    'Preparing interview review',
+  ]
+
+  return (
+    <div className="processing-view">
+      <div className="processing-icon">
+        <Icon name="spark" size={24} />
+      </div>
+
+      <h1>Preparing your interview review</h1>
+
+      <p>
+        This usually takes a few minutes. You can stay here while we work.
+      </p>
+
+      <div className="processing-steps">
+        {steps.map((step, i) => {
+          const isCompleted = i < currentStep
+          const isActive = i === currentStep
+
+          return (
+            <div
+              key={step}
+              className={`processing-step ${
+                isActive ? 'active' : ''
+              } ${isCompleted ? 'completed' : ''}`}
+            >
+              <span className="step-indicator">
+                {isActive ? (
+                  <span className="spinner" />
+                ) : isCompleted ? (
+                  '✓'
+                ) : (
+                  i + 1
+                )}
+              </span>
+
+              <span>{step}</span>
+
+              {isActive && <small>In progress</small>}
+            </div>
+          )
+        })}
+      </div>
+
+      {error && (
+        <div className="processing-error">
+          {error}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function Overview() {
   const [coachReference, setCoachReference] = useState('')
-  return <div className="overview-view"><div className="breadcrumbs"><Link to="/">Workspace</Link><Icon name="chevron" size={14}/><span>Interview review</span></div><div className="overview-header"><div><div className="eyebrow">INTERVIEW REVIEW</div><h1>AI Product Manager</h1><p>Round 1 <span>·</span> Northstar AI</p></div><div className="overview-date">Sep 28, 2026</div></div><section className="assessment"><div className="assessment-label"><span className="assessment-dot"/> OVERALL ASSESSMENT <span className="qualitative">Good</span></div><p>Your overall performance was good. You demonstrated a clear understanding of your project experience, but some answers could be more structured and specific.</p></section><div className="strength-grid"><section className="strength-card"><h2>What Went Well</h2><ul><li>Connected your experience to the role’s core responsibilities.</li><li>Shared clear examples from previous projects.</li></ul></section><section className="strength-card"><h2>Areas to Improve</h2><ul><li>Make outcomes and impact more specific.</li><li>Use a clearer structure for open-ended questions.</li></ul></section></div><section className="questions-section"><div className="section-heading"><div><div className="eyebrow">YOUR CONVERSATION</div><h2>Interview Questions</h2></div><span className="question-count">3 questions</span></div><div className="question-list">{[
-      ['Q1', 'Tell me about your previous project.', 'Good'], ['Q2', 'Why do you want to become an AI Product Manager?', 'Good'], ['Q3', 'How would you improve this product?', 'Needs Improvement'],
-    ].map(([number, question, label]) => <QuestionCard key={number} number={number} question={question} label={label} onToggle={(expanded) => setCoachReference(expanded ? number : '')}/>)}</div></section><CoachBar reference={coachReference ? `Question ${coachReference.slice(1)}` : ''}/>
-  </div> }
+  const [interviewData, setInterviewData] = useState<any>(null)
 
-const questionDetails: Record<string, { answer: string; analysis: string; strengths: string; improvements: string; suggestion: string; dimensions: string[] }> = {
-  Q1: { answer: '“In my last role, I led a redesign of our onboarding flow. We noticed many new users did not reach their first successful workflow, so I partnered with design and engineering to simplify setup and add clearer guidance. Activation improved after launch, and we kept iterating based on support feedback.”', analysis: 'You gave a relevant example and explained the problem, your contribution, and the outcome. Adding a concrete measure of the change would make the impact more specific.', strengths: 'Clear ownership and a relevant project example; you connected the work to a user problem.', improvements: 'Quantify the activation change and briefly explain how you measured it.', suggestion: 'Keep the problem → action → result structure, and include one measurable outcome if available.', dimensions: ['Good', 'Good', 'Good', 'Good', 'Good'] },
-  Q2: { answer: '“I enjoy working at the intersection of user needs and technology. In my previous projects I often helped translate customer feedback into product decisions, and I’d like to do more of that with AI products. I’m especially interested in making complex capabilities useful and understandable to people.”', analysis: 'Your motivation is relevant and communicates a thoughtful interest in the role. The answer would be more memorable with a specific example that connects your experience to this company or product.', strengths: 'Communicated a clear reason for moving into AI product management and connected it to prior work.', improvements: 'Support your motivation with a concrete example and a more specific connection to the role.', suggestion: 'Name one experience that sparked your interest, then connect it to the kind of product challenge in this role.', dimensions: ['Good', 'Good', 'Needs Improvement', 'Good', 'Good'] },
-  Q3: { answer: '“I think I would make the onboarding better and add more AI features so users can get more value. I’d probably talk to users and see what they need.”', analysis: 'Your answer identifies relevant directions, but stays at a high level. A concrete user need and a clear prioritization rationale would make your thinking easier to follow.', strengths: 'Recognized onboarding as a potential source of user friction.', improvements: 'Define the user problem before suggesting a solution.', suggestion: 'Describe one specific user segment, the obstacle they face, and how you would validate which improvement matters most.', dimensions: ['Good', 'Good', 'Needs Improvement', 'Needs Improvement', 'Good'] },
-}
+  useEffect(() => {
+    const storedData = sessionStorage.getItem('interviewAnalysis')
 
-function QuestionCard({ number, question, label, onToggle }: { number: string; question: string; label: string; onToggle: (expanded: boolean) => void }) {
-  const [expanded, setExpanded] = useState(false)
-  const detail = questionDetails[number]
-  const toggle = () => { const nextExpanded = !expanded; setExpanded(nextExpanded); onToggle(nextExpanded) }
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle() }
+    if (storedData) {
+      setInterviewData(JSON.parse(storedData))
+    }
+  }, [])
+
+  if (!interviewData) {
+    return (
+      <div className="overview-view">
+        <p>Loading interview review...</p>
+      </div>
+    )
   }
-  return <div className={`question-card-wrap ${expanded ? 'expanded' : ''}`}>
-    <div className="question-card" role="button" tabIndex={0} aria-expanded={expanded} onClick={toggle} onKeyDown={handleKeyDown}><span className="question-number">{number}</span><span className="question-text">{question}</span><span className={`assessment-pill ${label === 'Needs Improvement' ? 'needs-work' : ''}`}>{label}</span><span className={`question-chevron ${expanded ? 'open' : ''}`}><Icon name="chevron" size={17}/></span></div>
-    {expanded && <div className="inline-detail"><div className="detail-section"><div className="eyebrow">YOUR ANSWER</div><p>{detail.answer}</p></div><div className="detail-section"><div className="eyebrow">AI ANALYSIS</div><p>{detail.analysis}</p><div className="dimension-grid">{['Relevance', 'Structure', 'Specificity', 'Depth', 'Communication'].map((dimension, i) => <div className="dimension" key={dimension}><span>{dimension}</span><strong className={detail.dimensions[i] === 'Needs Improvement' ? 'dim-needs' : ''}>{detail.dimensions[i]}</strong></div>)}</div></div><div className="detail-columns"><div><h3>What Went Well</h3><p>{detail.strengths}</p></div><div><h3>Areas to Improve</h3><p>{detail.improvements}</p></div></div><div className="suggestion"><strong>Try this next time</strong><p>{detail.suggestion}</p></div></div>}
-  </div>
+
+  const { role, round, company, analysis } = interviewData
+
+  const qaAnalysis = analysis?.qa_analysis || []
+
+  // Collect strengths and improvement areas from all questions
+  const strengths = qaAnalysis.flatMap(
+    (item: any) => item.strengths || []
+  )
+
+  const improvements = qaAnalysis.flatMap(
+    (item: any) => item.areas_to_improve || []
+  )
+
+  // Use the overall assessment returned by the AI
+  const assessments = qaAnalysis.map(
+    (item: any) => item.overall_assessment
+  )
+
+  let overallAssessment = 'Good'
+
+  if (assessments.includes('Needs Improvement')) {
+    overallAssessment = 'Needs Improvement'
+  } else if (
+    assessments.length > 0 &&
+    assessments.every((item: string) => item === 'Excellent')
+  ) {
+    overallAssessment = 'Excellent'
+  }
+
+  const assessmentText =
+    overallAssessment === 'Excellent'
+      ? 'Your overall interview performance was strong. Your answers were generally relevant, structured, and specific.'
+      : overallAssessment === 'Needs Improvement'
+        ? 'Your interview showed some good points, but several answers could be more structured, specific, and detailed.'
+        : 'Your overall interview performance was good, but some answers could be more structured and specific.'
+
+  return (
+    <div className="overview-view">
+      <div className="breadcrumbs">
+        <Link to="/">Workspace</Link>
+        <Icon name="chevron" size={14} />
+        <span>Interview review</span>
+      </div>
+
+      <div className="overview-header">
+        <div>
+          <div className="eyebrow">INTERVIEW REVIEW</div>
+
+          <h1>{role || 'Interview'}</h1>
+
+          <p>
+            {round || 'Interview'}
+            {company && (
+              <>
+                <span> · </span>
+                {company}
+              </>
+            )}
+          </p>
+        </div>
+
+        <div className="overview-date">
+          {new Date().toLocaleDateString('en-US', {
+            month: 'short',
+            day: '2-digit',
+            year: 'numeric',
+          })}
+        </div>
+      </div>
+
+      <section className="assessment">
+        <div className="assessment-label">
+          <span className="assessment-dot" />
+          OVERALL ASSESSMENT
+          <span className="qualitative">
+            {overallAssessment}
+          </span>
+        </div>
+
+        <p>{assessmentText}</p>
+      </section>
+
+      <div className="strength-grid">
+        <section className="strength-card">
+          <h2>What Went Well</h2>
+
+          {strengths.length > 0 ? (
+            <ul>
+              {strengths.slice(0, 4).map(
+                (strength: string, index: number) => (
+                  <li key={index}>{strength}</li>
+                )
+              )}
+            </ul>
+          ) : (
+            <p>No specific strengths were identified.</p>
+          )}
+        </section>
+
+        <section className="strength-card">
+          <h2>Areas to Improve</h2>
+
+          {improvements.length > 0 ? (
+            <ul>
+              {improvements.slice(0, 4).map(
+                (improvement: string, index: number) => (
+                  <li key={index}>{improvement}</li>
+                )
+              )}
+            </ul>
+          ) : (
+            <p>No major improvement areas were identified.</p>
+          )}
+        </section>
+      </div>
+
+      <section className="questions-section">
+        <div className="section-heading">
+          <div>
+            <div className="eyebrow">YOUR CONVERSATION</div>
+            <h2>Interview Questions</h2>
+          </div>
+
+          <span className="question-count">
+            {qaAnalysis.length} questions
+          </span>
+        </div>
+
+        <div className="question-list">
+          {qaAnalysis.map((item: any, index: number) => (
+            <QuestionCard
+              key={index}
+              number={`Q${index + 1}`}
+              question={item.question}
+              label={item.overall_assessment}
+              detail={item}
+              onToggle={(expanded) =>
+                setCoachReference(
+                  expanded ? `Q${index + 1}` : ''
+                )
+              }
+            />
+          ))}
+        </div>
+      </section>
+
+      <CoachBar
+        reference={
+          coachReference
+            ? `Question ${coachReference.slice(1)}`
+            : ''
+        }
+      />
+    </div>
+  )
 }
 
-function CoachBar({ reference }: { reference: string }) { const [prompt, setPrompt] = useState(''); const [sent, setSent] = useState(false); return <div className="coach-wrap"><div className="coach-context"><Icon name="spark" size={15}/><span>AI Coach</span><small>{reference ? `Reference: ${reference}` : 'Ask about your interview'}</small></div>{sent && <div className="coach-response">That’s a useful question. Start by naming the user and the specific problem you observed, then explain how you would compare possible improvements.</div>}<form className="coach-input" onSubmit={(e) => { e.preventDefault(); if (prompt.trim()) { setSent(true); setPrompt('') } }}><input aria-label="Ask the AI Coach" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={reference ? `Ask about ${reference.toLowerCase()}...` : 'Ask anything about your interview...'} /><button aria-label="Send to AI Coach" type="submit" disabled={!prompt.trim()}><Icon name="chevron" size={17}/></button></form></div> }
+function QuestionCard({
+  number,
+  question,
+  label,
+  detail,
+  onToggle,
+}: {
+  number: string
+  question: string
+  label: string
+  detail: any
+  onToggle: (expanded: boolean) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  const toggle = () => {
+    const nextExpanded = !expanded
+    setExpanded(nextExpanded)
+    onToggle(nextExpanded)
+  }
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      toggle()
+    }
+  }
+
+  const dimensions = [
+    'Relevance',
+    'Structure',
+    'Specificity',
+    'Depth',
+    'Communication',
+  ]
+
+  return (
+    <div
+      className={`question-card-wrap ${
+        expanded ? 'expanded' : ''
+      }`}
+    >
+      <div
+        className="question-card"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={toggle}
+        onKeyDown={handleKeyDown}
+      >
+        <span className="question-number">{number}</span>
+
+        <span className="question-text">
+          {question}
+        </span>
+
+        <span
+          className={`assessment-pill ${
+            label === 'Needs Improvement'
+              ? 'needs-work'
+              : ''
+          }`}
+        >
+          {label}
+        </span>
+
+        <span
+          className={`question-chevron ${
+            expanded ? 'open' : ''
+          }`}
+        >
+          <Icon name="chevron" size={17} />
+        </span>
+      </div>
+
+      {expanded && (
+        <div className="inline-detail">
+
+          <div className="detail-section">
+            <div className="eyebrow">YOUR ANSWER</div>
+
+            <p>
+              {detail?.answer || 'No answer available.'}
+            </p>
+          </div>
+
+          <div className="detail-section">
+            <div className="eyebrow">AI ANALYSIS</div>
+
+            <p>
+              {detail?.analysis || 'No analysis available.'}
+            </p>
+
+            <div className="dimension-grid">
+              {dimensions.map((dimension) => {
+                const value =
+                  detail?.dimensions?.[dimension] ||
+                  'Good'
+
+                return (
+                  <div
+                    className="dimension"
+                    key={dimension}
+                  >
+                    <span>{dimension}</span>
+
+                    <strong
+                      className={
+                        value === 'Needs Improvement'
+                          ? 'dim-needs'
+                          : ''
+                      }
+                    >
+                      {value}
+                    </strong>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="detail-columns">
+            <div>
+              <h3>What Went Well</h3>
+
+              <ul>
+                {(detail?.strengths || []).map(
+                  (item: string, index: number) => (
+                    <li key={index}>{item}</li>
+                  )
+                )}
+              </ul>
+            </div>
+
+            <div>
+              <h3>Areas to Improve</h3>
+
+              <ul>
+                {(detail?.areas_to_improve || []).map(
+                  (item: string, index: number) => (
+                    <li key={index}>{item}</li>
+                  )
+                )}
+              </ul>
+            </div>
+          </div>
+
+          <div className="suggestion">
+            <strong>Try this next time</strong>
+
+            <p>
+              {detail?.suggested_improvement ||
+                'Try to make your answer more specific and structured.'}
+            </p>
+          </div>
+
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CoachBar({ reference }: { reference: string }) {
+  const [prompt, setPrompt] = useState('')
+  const [response, setResponse] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (
+    e: React.FormEvent
+  ) => {
+    e.preventDefault()
+
+    if (!prompt.trim() || loading) {
+      return
+    }
+
+    try {
+      setLoading(true)
+      setResponse('')
+
+      const storedData =
+        sessionStorage.getItem('interviewAnalysis')
+
+      if (!storedData) {
+        throw new Error(
+          'Interview data not found'
+        )
+      }
+
+      const interviewData = JSON.parse(storedData)
+
+      const response = await fetch(
+        'http://127.0.0.1:8000/api/interviews/coach',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            question: prompt,
+            reference,
+            transcript:
+              interviewData.transcript,
+            analysis:
+              interviewData.analysis,
+          }),
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          'AI Coach request failed'
+        )
+      }
+
+      const data = await response.json()
+
+      setResponse(data.answer || data.response || '')
+      setPrompt('')
+    } catch (err) {
+      console.error('Coach error:', err)
+
+      setResponse(
+        'Sorry, I could not answer this question right now.'
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="coach-wrap">
+
+      <div className="coach-context">
+        <Icon name="spark" size={15} />
+
+        <span>AI Coach</span>
+
+        <small>
+          {reference
+            ? `Reference: ${reference}`
+            : 'Ask about your interview'}
+        </small>
+      </div>
+
+      {response && (
+        <div className="coach-response">
+          {response}
+        </div>
+      )}
+
+      <form
+        className="coach-input"
+        onSubmit={handleSubmit}
+      >
+        <input
+          aria-label="Ask the AI Coach"
+          value={prompt}
+          onChange={(e) =>
+            setPrompt(e.target.value)
+          }
+          placeholder={
+            reference
+              ? `Ask about ${reference.toLowerCase()}...`
+              : 'Ask anything about your interview...'
+          }
+        />
+
+        <button
+          aria-label="Send to AI Coach"
+          type="submit"
+          disabled={!prompt.trim() || loading}
+        >
+          {loading ? (
+            <span className="spinner" />
+          ) : (
+            <Icon name="chevron" size={17} />
+          )}
+        </button>
+      </form>
+
+    </div>
+  )
+}
 
 function NotFound() { return <div className="not-found"><h1>Interview workspace</h1><p>This sample page is not available.</p><Link to="/">Back to workspace</Link></div> }
 
