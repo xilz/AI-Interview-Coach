@@ -1,5 +1,7 @@
-import { useState, type KeyboardEvent, type ReactNode, useEffect } from 'react'
+import { useState, type KeyboardEvent, type ReactNode, useEffect, useRef } from 'react'
 import { Link, Route, Routes, useNavigate } from 'react-router-dom'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import './App.css'
 
 const interviews = [
@@ -424,6 +426,7 @@ function Processing() {
 
 function Overview() {
   const [coachReference, setCoachReference] = useState('')
+  const [coachOpen, setCoachOpen] = useState(false)
   const [interviewData, setInterviewData] = useState<any>(null)
 
   useEffect(() => {
@@ -479,6 +482,7 @@ function Overview() {
         : 'Your overall interview performance was good, but some answers could be more structured and specific.'
 
   return (
+    <div className={`review-layout ${coachOpen ? 'coach-is-open' : ''}`}>
     <div className="overview-view">
       <div className="breadcrumbs">
         <Link to="/">Workspace</Link>
@@ -579,22 +583,18 @@ function Overview() {
               label={item.overall_assessment}
               detail={item}
               onToggle={(expanded) =>
-                setCoachReference(
-                  expanded ? `Q${index + 1}` : ''
-                )
+                {
+                  setCoachReference(expanded ? `Question ${index + 1}` : '')
+                  if (expanded) setCoachOpen(true)
+                }
               }
             />
           ))}
         </div>
       </section>
 
-      <CoachBar
-        reference={
-          coachReference
-            ? `Question ${coachReference.slice(1)}`
-            : ''
-        }
-      />
+    </div>
+      <CoachBar reference={coachReference} interviewData={interviewData} open={coachOpen} onOpenChange={setCoachOpen} />
     </div>
   )
 }
@@ -695,7 +695,7 @@ function QuestionCard({
             <div className="dimension-grid">
               {dimensions.map((dimension) => {
                 const value =
-                  detail?.dimensions?.[dimension] ||
+                  detail?.dimensions?.[dimension]?.assessment ||
                   'Good'
 
                 return (
@@ -761,127 +761,86 @@ function QuestionCard({
   )
 }
 
-function CoachBar({ reference }: { reference: string }) {
+type CoachMessage = { role: 'user' | 'assistant'; content: string; error?: boolean }
+
+function CoachBar({ reference, interviewData, open, onOpenChange }: { reference: string; interviewData: any; open: boolean; onOpenChange: (open: boolean) => void }) {
   const [prompt, setPrompt] = useState('')
-  const [response, setResponse] = useState('')
+  const [messages, setMessages] = useState<CoachMessage[]>([])
   const [loading, setLoading] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  const handleSubmit = async (
-    e: React.FormEvent
-  ) => {
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [messages, open])
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-
-    if (!prompt.trim() || loading) {
-      return
-    }
+    const question = prompt.trim()
+    if (!question || loading) return
+    const history = messages.filter((message) => !message.error).map(({ role, content }) => ({ role, content }))
+    setMessages((current) => [...current, { role: 'user', content: question }, { role: 'assistant', content: '' }])
+    setPrompt('')
+    setLoading(true)
 
     try {
-      setLoading(true)
-      setResponse('')
-
-      const storedData =
-        sessionStorage.getItem('interviewAnalysis')
-
-      if (!storedData) {
-        throw new Error(
-          'Interview data not found'
-        )
-      }
-
-      const interviewData = JSON.parse(storedData)
-
-      const response = await fetch(
-        'http://127.0.0.1:8000/api/interviews/coach',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            question: prompt,
-            reference,
-            transcript:
-              interviewData.transcript,
-            analysis:
-              interviewData.analysis,
-          }),
-        }
-      )
-
+      const response = await fetch('http://127.0.0.1:8000/api/interviews/coach', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, reference, history, transcript: interviewData.transcript, analysis: interviewData.analysis }),
+      })
       if (!response.ok) {
-        throw new Error(
-          'AI Coach request failed'
-        )
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || '教练暂时无法回答，请稍后重试。')
       }
-
-      const data = await response.json()
-
-      setResponse(data.answer || data.response || '')
-      setPrompt('')
+      if (!response.body) throw new Error('浏览器无法读取流式响应，请重试。')
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finished = false
+      while (!finished) {
+        const { value, done } = await reader.read()
+        buffer += decoder.decode(value, { stream: !done })
+        let delimiter = /\r?\n\r?\n/.exec(buffer)
+        while (delimiter?.index !== undefined) {
+          const rawEvent = buffer.slice(0, delimiter.index).replace(/\r/g, '')
+          buffer = buffer.slice(delimiter.index + delimiter[0].length)
+          const eventName = rawEvent.split('\n').find((line) => line.startsWith('event:'))?.slice(6).trim()
+          const dataLine = rawEvent.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
+          if (dataLine) {
+            const payload = JSON.parse(dataLine)
+            if (eventName === 'delta') setMessages((current) => current.map((item, index) => index === current.length - 1 ? { ...item, content: item.content + payload.text } : item))
+            if (eventName === 'error') throw new Error(payload.message || '生成回答时发生错误，请重试。')
+            if (eventName === 'done') finished = true
+          }
+          delimiter = /\r?\n\r?\n/.exec(buffer)
+        }
+        if (done) break
+      }
+      if (!finished) throw new Error('连接中断，回答没有完整生成。请重新提问。')
     } catch (err) {
       console.error('Coach error:', err)
-
-      setResponse(
-        'Sorry, I could not answer this question right now.'
-      )
+      const errorMessage = err instanceof Error ? err.message : '回答失败，请重试。'
+      setMessages((current) => [...current.slice(0, -1), { role: 'assistant', content: errorMessage, error: true }])
     } finally {
       setLoading(false)
     }
   }
 
-  return (
-    <div className="coach-wrap">
-
-      <div className="coach-context">
-        <Icon name="spark" size={15} />
-
-        <span>AI Coach</span>
-
-        <small>
-          {reference
-            ? `Reference: ${reference}`
-            : 'Ask about your interview'}
-        </small>
+  return <>
+    {!open && <button className="coach-launch" onClick={() => onOpenChange(true)}><Icon name="spark" size={17}/> Ask AI Coach</button>}
+    {open && <><button className="coach-backdrop" aria-label="关闭 AI Coach" onClick={() => onOpenChange(false)}/><aside className="coach-panel" aria-label="AI Coach chat">
+      <header className="coach-header"><div><Icon name="spark" size={17}/><strong>AI Coach</strong></div><button className="coach-close" onClick={() => onOpenChange(false)} aria-label="收起 AI Coach">收起</button></header>
+      <div className="coach-session-context">{reference ? `围绕 ${reference} 交流` : '基于整场面试分析交流'}</div>
+      <div className="coach-messages" aria-live="polite">
+        {messages.length === 0 && <div className="coach-empty">你可以询问回答中的亮点、改进方式，或怎样更清楚地组织表达。</div>}
+        {messages.map((message, index) => <div key={index} className={`chat-row ${message.role} ${message.error ? 'chat-error' : ''}`}>
+          <div className="chat-bubble">{message.role === 'assistant' ? <><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>{loading && index === messages.length - 1 && <span className="typing-cursor"/>}{message.error && <button className="retry-message" onClick={() => setPrompt(messages[index - 1]?.content || '')}>重试此问题</button>}</> : message.content}</div>
+        </div>)}
+        <div ref={messagesEndRef}/>
       </div>
-
-      {response && (
-        <div className="coach-response">
-          {response}
-        </div>
-      )}
-
-      <form
-        className="coach-input"
-        onSubmit={handleSubmit}
-      >
-        <input
-          aria-label="Ask the AI Coach"
-          value={prompt}
-          onChange={(e) =>
-            setPrompt(e.target.value)
-          }
-          placeholder={
-            reference
-              ? `Ask about ${reference.toLowerCase()}...`
-              : 'Ask anything about your interview...'
-          }
-        />
-
-        <button
-          aria-label="Send to AI Coach"
-          type="submit"
-          disabled={!prompt.trim() || loading}
-        >
-          {loading ? (
-            <span className="spinner" />
-          ) : (
-            <Icon name="chevron" size={17} />
-          )}
-        </button>
+      <form className="coach-composer" onSubmit={handleSubmit}>
+        <textarea aria-label="向 AI Coach 提问" rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} placeholder="Ask anything about your interview..." />
+        <div className="composer-footer"><small>Enter 发送 · Shift + Enter 换行</small><button aria-label="发送消息" type="submit" disabled={!prompt.trim() || loading}>{loading ? <span className="spinner"/> : <Icon name="chevron" size={17}/>}</button></div>
       </form>
-
-    </div>
-  )
+    </aside></>}
+  </>
 }
 
 function NotFound() { return <div className="not-found"><h1>Interview workspace</h1><p>This sample page is not available.</p><Link to="/">Back to workspace</Link></div> }
