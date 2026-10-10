@@ -80,9 +80,34 @@
 .question-chevron.open { transform:rotate(90deg); }
 .inline-detail { border-top:1px solid #edf0ec; background:#fff; }
 .inline-detail .detail-section { padding:15px 17px; }
-.inline-detail .detail-section>p { font-size:11px; }
+.question-text { min-width:0; overflow-wrap:anywhere; }
 .inline-detail .detail-columns>div { padding:14px 17px; }
 .inline-detail .suggestion { margin:0 17px 15px; }
+.assessment>p,.inline-detail .detail-section>p { font-size:var(--review-body-size); line-height:var(--review-line-height); color:var(--review-body-color); }
+.inline-detail .answer-section>p { font-size:12px; color:var(--review-body-color); font-weight:400; }
+.overview-summary-points { margin:10px 0 0; padding-left:19px; color:var(--review-body-color); font-size:var(--review-body-size); line-height:var(--review-line-height); }
+.overview-summary-points li+li { margin-top:6px; }
+.overview-summary-points strong { color:#536054; font-weight:600; }
+.inline-detail .detail-section.ai-feedback { border-bottom:0; }
+.ai-feedback h3 { margin:0 0 8px; color:#4c584c; font:600 11px Manrope,sans-serif; letter-spacing:.35px; }
+.ai-feedback-part+.ai-feedback-part { margin-top:19px; }
+.feedback-prose,.feedback-evidence { color:var(--review-body-color); font-size:var(--review-body-size); font-weight:400; line-height:var(--review-line-height); overflow-wrap:anywhere; }
+.feedback-prose p { margin:0 0 9px; }
+.feedback-prose p:last-child { margin-bottom:0; }
+.feedback-prose ul,.feedback-prose ol { margin:6px 0; padding-left:20px; }
+.feedback-prose strong { color:inherit; font-weight:600; }
+.feedback-evidence { margin:8px 0 0; }
+.feedback-evidence strong { color:inherit; font-weight:600; }
+.feedback-evidence span { color:#7c867c; font-size:var(--review-aux-size); font-weight:600; }
+.next-time-item+.next-time-item { margin-top:10px; }
+.reference-example { margin-top:8px; color:var(--review-body-color); font-size:var(--review-body-size); font-weight:400; line-height:var(--review-line-height); overflow-wrap:anywhere; }
+.reference-example>strong { display:block; margin-bottom:4px; color:#69766a; font-size:var(--review-aux-size); }
+.reference-example p { margin:0; }
+.dimensions-disclosure { padding:13px 17px; background:#fafbf9; border-top:1px solid #edf0ec; }
+.dimensions-disclosure summary { color:#667367; cursor:pointer; font-size:var(--review-aux-size); font-weight:600; }
+.dimensions-disclosure .dimension-grid { margin-top:12px; }
+.dimension p { margin:0; color:var(--review-muted-color); font-size:var(--review-aux-size); line-height:var(--review-line-height); }
+@media (max-width:640px) { .inline-detail .answer-section>p { font-size:11px; } }
 
 /* The coach lives beside the review and owns its scrolling/composer region. */
 .review-layout { width:min(100%,1280px); margin:0 auto; padding:0 24px; display:flex; align-items:stretch; gap:20px; }
