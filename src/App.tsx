@@ -1,16 +1,17 @@
 import { useState, type KeyboardEvent, type ReactNode, useEffect, useRef } from 'react'
-import { Link, Route, Routes, useNavigate } from 'react-router-dom'
+import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { combineIssueAndEvidence, getNextTimeContent, getSummaryPoints, removeRepeatedFeedback } from './reviewFormatting'
 import { scrollContainerToBottom } from './coachScroll'
+import { getInterview, getCoachMessages, saveCoachMessages, updateInterview } from './storage/db'
+import { migrateLegacyInterview } from './storage/migrate'
+import { loadInterviewHistory, loadInterviewReview, shouldSkipAnalysis } from './storage/recovery'
+import { fetchWithTimeout } from './request'
+import { persistTranscribedInterview } from './storage/upload'
+import { InterviewPersistenceError, persistAnalysis } from './storage/analysis'
+import type { CoachMessage as StoredCoachMessage, Interview } from './storage/types'
 import './App.css'
-
-const interviews = [
-  { role: 'AI Product Manager', round: 'Round 1', company: 'Northstar AI', date: 'Sep 28, 2026' },
-  { role: 'Software Engineer', round: 'Technical Interview', company: 'Linear', date: 'Sep 22, 2026' },
-  { role: 'AI Product Manager', round: 'Case Interview', company: 'Fable', date: 'Sep 16, 2026' },
-]
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true as const }
@@ -25,7 +26,15 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 
 function Shell({ children }: { children: ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [interviews, setInterviews] = useState<Interview[]>([])
+  const [historyError, setHistoryError] = useState('')
   const navigate = useNavigate()
+  const location = useLocation()
+  useEffect(() => {
+    let active = true
+    loadInterviewHistory().then((records) => { if (active) { setInterviews(records); setHistoryError('') } }).catch(() => { if (active) setHistoryError('Interview history is unavailable. Please try again later.') })
+    return () => { active = false }
+  }, [location.pathname])
   return <div className="app-shell">
     {sidebarOpen && <><button className="sidebar-scrim" aria-label="Close menu" onClick={() => setSidebarOpen(false)} /><aside className="sidebar">
       <button className="new-interview" onClick={() => navigate('/upload')}><Icon name="plus" /> <span>Start New</span><span className="shortcut">⌘ K</span></button>
@@ -34,8 +43,8 @@ function Shell({ children }: { children: ReactNode }) {
         {['All Interviews', 'AI Product Manager', 'Software Engineer', 'Other positions'].map((folder, i) => <button key={folder} className={`folder-item ${i === 0 ? 'selected' : ''}`}><Icon name="folder" size={16}/><span>{folder}</span>{i === 0 && <span className="folder-count">3</span>}</button>)}
       </nav>
       <div className="history-heading"><span className="side-label">RECENT</span><button aria-label="More interview history">···</button></div>
-      <div className="history-list">{interviews.map((item, i) => <button className="history-item" key={`${item.company}-${i}`} onClick={() => navigate('/interview/demo')}>
-        <span className="history-role">{item.role}</span><span className="history-meta">{item.round} · {item.company}</span><span className="history-date">{item.date}</span>
+      <div className="history-list">{historyError ? <p>{historyError}</p> : interviews.map((item) => <button className="history-item" key={item.id} onClick={() => navigate(`/interview/${encodeURIComponent(item.id)}`)}>
+        <span className="history-role">{item.role}</span><span className="history-meta">{item.round} · {item.company}</span><span className="history-date">{new Date(item.updatedAt).toLocaleDateString()}</span>
       </button>)}</div>
       <div className="sidebar-foot"><span className="avatar-small">JD</span><div><strong>Jordan Davis</strong><small>Personal workspace</small></div><span className="more">···</span></div>
     </aside></>}
@@ -70,14 +79,15 @@ function Upload() {
     setUploading(true)
     setError('')
 
+    const interviewId = crypto.randomUUID()
     try {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch('http://127.0.0.1:8000/api/interviews/upload', {
+      const response = await fetchWithTimeout('http://127.0.0.1:8000/api/interviews/upload', {
         method: 'POST',
         body: formData,
-      })
+      }, 15 * 60 * 1000, 'Upload and transcription')
 
       const data = await response.json()
       if (!response.ok) {
@@ -88,17 +98,16 @@ function Upload() {
       }
 
       // 暂时把分析结果保存下来，后面的 Processing 页面会继续使用
+      const legacyData = {
+          id: interviewId, filename: data.filename, transcript: data.transcript,
+          role, round, company, jd,
+        }
       sessionStorage.setItem(
         'interviewData',
-        JSON.stringify({
-          filename: data.filename,
-          transcript: data.transcript,
-          role,
-          round,
-          company,
-          jd,
-        })
+        JSON.stringify(legacyData)
       )
+      const now = new Date().toISOString()
+      await persistTranscribedInterview({ ...legacyData, status: 'transcribed', createdAt: now, updatedAt: now })
 
       navigate('/processing')
     } catch (err) {
@@ -299,12 +308,12 @@ function subscribeToAnalysis(transcript: string) {
   }
   if (!entry) {
     const controller = new AbortController()
-    const promise = fetch('http://127.0.0.1:8000/api/interviews/analyze', {
+    const promise = fetchWithTimeout('http://127.0.0.1:8000/api/interviews/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transcript }),
       signal: controller.signal,
-    }).then(async (response) => {
+    }, 10 * 60 * 1000, 'Interview analysis').then(async (response) => {
       const data = await response.json()
       if (!response.ok) throw new Error(data?.error || 'Interview analysis failed')
       return data
@@ -347,6 +356,8 @@ function Processing() {
   const [error, setError] = useState('')
   const [progressState, setProgressState] = useState<'analyzing' | 'preparing' | 'failed'>('analyzing')
   const [retryAttempt, setRetryAttempt] = useState(0)
+  const [persistencePending, setPersistencePending] = useState(false)
+  const completedAnalysis = useRef<any>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -367,16 +378,34 @@ function Processing() {
           throw new Error('Transcript not found')
         }
 
+        await migrateLegacyInterview()
+        const restored = interviewData.id ? await getInterview(interviewData.id) : undefined
+        if (shouldSkipAnalysis(restored)) {
+          sessionStorage.setItem('interviewAnalysis', JSON.stringify({ ...interviewData, ...restored }))
+          navigate(`/interview/${restored.id}`)
+          return
+        }
+
+        let analysisData = completedAnalysis.current
+
         // The upload endpoint has already completed audio conversion and ASR.
         // Only the analysis request remains in this view.
-        const analysisRequest = subscribeToAnalysis(interviewData.transcript)
-        releaseAnalysis = analysisRequest.release
-        let analysisData
+        let record: Interview | undefined
         try {
-          analysisData = await analysisRequest.promise
-        } finally {
-          analysisRequest.release()
-          releaseAnalysis = undefined
+          await migrateLegacyInterview()
+          record = await getInterview(interviewData.id)
+          if (record) await updateInterview({ ...record, status: 'analyzing', error: undefined, updatedAt: new Date().toISOString() })
+        } catch (storageError) { console.error('Interview persistence unavailable:', storageError) }
+        if (!analysisData) {
+          const analysisRequest = subscribeToAnalysis(interviewData.transcript)
+          releaseAnalysis = analysisRequest.release
+          try {
+            analysisData = await analysisRequest.promise
+            completedAnalysis.current = analysisData
+          } finally {
+            analysisRequest.release()
+            releaseAnalysis = undefined
+          }
         }
         if (cancelled) return
 
@@ -390,14 +419,34 @@ function Processing() {
             analysis: analysisData,
           })
         )
+        if (record) {
+          try {
+            await persistAnalysis(record, analysisData)
+            setPersistencePending(false)
+          } catch (storageError) {
+            setPersistencePending(true)
+            if (storageError instanceof InterviewPersistenceError) throw storageError
+            throw new InterviewPersistenceError(storageError)
+          }
+        }
 
         requestAnimationFrame(() => {
-          if (!cancelled) navigate('/interview/demo')
+          if (!cancelled) navigate(`/interview/${encodeURIComponent(interviewData.id)}`)
         })
       } catch (err) {
         if (cancelled) return
+        try {
+          const legacy = sessionStorage.getItem('interviewData')
+          if (legacy) {
+            const data = JSON.parse(legacy) as Interview
+            if (data.id) {
+              const record = await getInterview(data.id)
+              if (record && !completedAnalysis.current) await updateInterview({ ...record, status: 'analysis_failed', error: err instanceof Error ? err.message : 'Analysis failed', updatedAt: new Date().toISOString() })
+            }
+          }
+        } catch (storageError) { console.error('Interview persistence unavailable:', storageError) }
         setProgressState('failed')
-        console.error('Analysis error:', err)
+        console.error(completedAnalysis.current ? 'Interview storage error:' : 'Analysis error:', err)
 
         if (err instanceof Error) {
           setError(err.message)
@@ -462,7 +511,7 @@ function Processing() {
           {error}{' '}
           <p>Retry analysis uses the saved transcript only. To retry upload or transcription, return to the upload page and submit the recording again.</p>
           <button type="button" onClick={() => setRetryAttempt((attempt) => attempt + 1)}>
-            Retry analysis
+            {persistencePending ? 'Retry saving result' : 'Retry analysis'}
           </button>
         </div>
       )}
@@ -478,25 +527,38 @@ function isAssessmentLevel(value: unknown): value is AssessmentLevel {
 }
 
 function Overview() {
+  const { id: routeId } = useParams()
   const [coachReference, setCoachReference] = useState('')
   const [coachOpen, setCoachOpen] = useState(false)
   const [interviewData, setInterviewData] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
-    const storedData = sessionStorage.getItem('interviewAnalysis')
+    let active = true
+    void (async () => {
+      try {
+        await migrateLegacyInterview()
+        const record = await loadInterviewReview(routeId)
+        if (active) setInterviewData(record)
+      } catch (error) {
+        if (active) setLoadError(error instanceof Error ? error.message : 'Could not load this interview.')
+      } finally {
+        if (active) setLoading(false)
+      }
+    })()
+    return () => { active = false }
+  }, [routeId])
 
-    if (storedData) {
-      setInterviewData(JSON.parse(storedData))
-    }
-  }, [])
-
-  if (!interviewData) {
+  if (loading) {
     return (
       <div className="overview-view">
         <p>Loading interview review...</p>
       </div>
     )
   }
+
+  if (loadError || !interviewData) return <div className="overview-view"><p>{loadError || 'This interview could not be loaded.'}</p><Link to="/">Return to History</Link></div>
 
   const { role, round, company, analysis } = interviewData
 
@@ -790,7 +852,7 @@ function QuestionCard({
   )
 }
 
-type CoachMessage = { role: 'user' | 'assistant'; content: string; error?: boolean }
+type CoachMessage = Omit<StoredCoachMessage, 'id' | 'interviewId' | 'createdAt'>
 
 function trimCoachHistory(messages: CoachMessage[]) {
   const maxChars = 8000
@@ -817,6 +879,15 @@ function CoachBar({ reference, interviewData, open, onOpenChange }: { reference:
   const messagesContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    let active = true
+    const interviewId = interviewData?.id
+    if (interviewId) void getCoachMessages(interviewId).then((stored) => {
+      if (active) setMessages(stored.map(({ role, content, error, incomplete }) => ({ role, content, error, incomplete })))
+    }).catch((error) => console.error('Coach history unavailable:', error))
+    return () => { active = false }
+  }, [interviewData?.id])
+
+  useEffect(() => {
     if (open) scrollContainerToBottom(messagesContainerRef.current)
   }, [messages, open])
 
@@ -833,7 +904,18 @@ function CoachBar({ reference, interviewData, open, onOpenChange }: { reference:
     const coachAnalysis = referenceDetail
       ? { reference_detail: referenceDetail }
       : { qa_analysis: Array.isArray(qaAnalysis) ? qaAnalysis : [] }
-    setMessages((current) => [...current, { role: 'user', content: question }, { role: 'assistant', content: '' }])
+    const userMessage: CoachMessage = { role: 'user', content: question }
+    const interviewId = interviewData.id as string
+    if (!interviewId) {
+      setMessages((current) => [...current, { role: 'user', content: question }, { role: 'assistant', content: '此面试记录缺少 ID，无法保存对话。', error: true }])
+      return
+    }
+    const turnId = crypto.randomUUID()
+    const userStored: StoredCoachMessage = { ...userMessage, id: `${turnId}:user`, interviewId, createdAt: new Date().toISOString() }
+    const assistantId = `${turnId}:assistant`
+    let streamedReply = ''
+    setMessages((current) => [...current, userMessage, { role: 'assistant', content: '' }])
+    void saveCoachMessages([userStored]).catch((error) => console.error('Coach message could not be saved:', error))
     setPrompt('')
     setLoading(true)
 
@@ -870,7 +952,10 @@ function CoachBar({ reference, interviewData, open, onOpenChange }: { reference:
           const dataLine = rawEvent.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
           if (dataLine) {
             const payload = JSON.parse(dataLine)
-            if (eventName === 'delta') setMessages((current) => current.map((item, index) => index === current.length - 1 ? { ...item, content: item.content + payload.text } : item))
+            if (eventName === 'delta' && typeof payload.text === 'string') {
+              streamedReply += payload.text
+              setMessages((current) => current.map((item, index) => index === current.length - 1 ? { ...item, content: item.content + payload.text } : item))
+            }
             if (eventName === 'error') throw new Error(payload.message || '生成回答时发生错误，请重试。')
             if (eventName === 'done') finished = true
           }
@@ -879,10 +964,12 @@ function CoachBar({ reference, interviewData, open, onOpenChange }: { reference:
         if (done) break
       }
       if (!finished) throw new Error('连接中断，回答没有完整生成。请重新提问。')
+      await saveCoachMessages([{ id: assistantId, interviewId, role: 'assistant', content: streamedReply, createdAt: new Date().toISOString() }])
     } catch (err) {
       console.error('Coach error:', err)
       const errorMessage = err instanceof Error ? err.message : '回答失败，请重试。'
       setMessages((current) => [...current.slice(0, -1), { role: 'assistant', content: errorMessage, error: true }])
+      void saveCoachMessages([{ id: assistantId, interviewId, role: 'assistant', content: streamedReply, error: true, incomplete: true, createdAt: new Date().toISOString() }]).catch((error) => console.error('Coach message could not be saved:', error))
     } finally {
       setLoading(false)
     }

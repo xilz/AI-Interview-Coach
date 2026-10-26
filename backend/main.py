@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 import tempfile
 import time
 from fractions import Fraction
@@ -157,14 +158,17 @@ def root():
     return {"message": "AI Interview Coach API is running"}
 
 
-def call_llm(prompt, stage="analysis"):
+def call_llm(prompt, stage="analysis", json_mode=False):
     started_at = time.perf_counter()
     try:
-        response = dashscope.Generation.call(
-            model="qwen-plus",
-            prompt=prompt,
-            result_format="message"
-        )
+        call_options = {
+            "model": "qwen-plus",
+            "prompt": prompt,
+            "result_format": "message",
+        }
+        if json_mode:
+            call_options["response_format"] = {"type": "json_object"}
+        response = dashscope.Generation.call(**call_options)
         if response.status_code != 200:
             raise RuntimeError("qwen-plus returned a non-success status")
         content = response.output.choices[0].message.content
@@ -183,12 +187,18 @@ def call_llm(prompt, stage="analysis"):
 
 
 def extract_json(text):
+    if not isinstance(text, str):
+        raise ValueError("模型输出必须是 JSON 文本")
     text = text.strip()
-
-    if text.startswith("```"):
-        text = text.replace("```json", "").replace("```", "").strip()
-
-    return json.loads(text)
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        if text.startswith(("{", "[")) and exc.pos >= len(text) - 2:
+            raise ValueError(f"模型 JSON 输出不完整，可能在生成中途被截断（第 {exc.lineno} 行，第 {exc.colno} 列）") from exc
+        raise ValueError(f"模型输出不是有效 JSON（第 {exc.lineno} 行，第 {exc.colno} 列）") from exc
 
 
 def _validate_extraction_result(value):
@@ -203,9 +213,34 @@ def _validate_extraction_result(value):
     if not isinstance(qa_pairs, list):
         raise ValueError("Q&A 提取结果缺少 qa_pairs 数组")
     for index, pair in enumerate(qa_pairs, start=1):
-        if not isinstance(pair, dict) or not isinstance(pair.get("question"), str) or not isinstance(pair.get("answer"), str):
-            raise ValueError(f"第 {index} 组 Q&A 必须包含字符串 question 和 answer")
+        if not isinstance(pair, dict):
+            raise ValueError(f"第 {index} 组 Q&A 必须是包含 question 和 answer 字段的对象")
+        if not isinstance(pair.get("question"), str):
+            raise ValueError(f"第 {index} 组 Q&A 的 question 必须是字符串（不得缺失、为 null 或使用其他类型）")
+        if not isinstance(pair.get("answer"), str):
+            raise ValueError(f"第 {index} 组 Q&A 的 answer 必须是字符串（不得缺失、为 null 或使用其他类型）")
     return {"speakers": speakers, "qa_pairs": qa_pairs}
+
+
+def _call_validated_json(prompt, stage, validator, max_attempts=2):
+    """Make one bounded repair attempt for malformed or schema-invalid JSON."""
+    current_prompt = prompt
+    for attempt in range(1, max_attempts + 1):
+        try:
+            raw = call_llm(current_prompt, stage=stage, json_mode=True)
+            return validator(extract_json(raw))
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "LLM stage=%s output_validation=failed attempt=%d/%d error_type=%s",
+                stage, attempt, max_attempts, type(exc).__name__,
+            )
+            if attempt == max_attempts:
+                raise ValueError(f"{stage} 输出在 {max_attempts} 次尝试后仍无效：{exc}") from exc
+            current_prompt = (
+                prompt
+                + "\n\n上一次输出未通过 JSON/Schema 校验。请重新完整生成整个 JSON 对象，严格遵守原输出结构和所有必需字段；"
+                + "不要省略字段、使用 null 或输出 JSON 以外的文本。"
+            )
 
 
 VALID_ASSESSMENTS = {"Excellent", "Good", "Needs Improvement"}
@@ -368,8 +403,9 @@ def _analyze_interview(transcript):
 要求：
 1. 判断转录中每个 speaker 的角色，只能是 interviewer 或 candidate；保留转录中使用的 speaker 名称作为对象键。
 2. 依据上述角色识别，找出面试官提出的问题及候选人对应的回答，按问题出现顺序输出。
-3. question 和 answer 必须尽量逐字保留原转录内容，不要润色或补写；无法确定对应关系时不要编造配对。
-4. 不要把面试官追问误作候选人回答，也不要把候选人的反问当成新的面试题。
+3. qa_pairs 中每一项都必须同时包含 question 和 answer 两个字段，且两者都必须是字符串；字段不得省略、不得为 null、不得使用其他类型。无法确定对应关系时不要输出该项。
+4. question 和 answer 必须尽量逐字保留原转录内容，不要润色或补写；无法确定对应关系时不要编造配对。
+5. 不要把面试官追问误作候选人回答，也不要把候选人的反问当成新的面试题。
 
 输出结构必须严格为：
 {{
@@ -378,7 +414,7 @@ def _analyze_interview(transcript):
 }}
 """
 
-    extracted = _validate_extraction_result(extract_json(call_llm(extraction_prompt, stage="speaker_qa_extraction")))
+    extracted = _call_validated_json(extraction_prompt, "speaker_qa_extraction", _validate_extraction_result)
 
 
     sample_output = ({
@@ -492,7 +528,7 @@ Excellent、Good、Needs Improvement。
 {json.dumps(sample_output, ensure_ascii=False, indent=2)}
 """
 
-    analysis = _validate_qa_analysis(extract_json(call_llm(analysis_prompt, stage="overall_question_analysis")))
+    analysis = _call_validated_json(analysis_prompt, "overall_question_analysis", _validate_qa_analysis)
 
     return {
         "speakers": extracted["speakers"],

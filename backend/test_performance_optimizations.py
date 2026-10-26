@@ -10,6 +10,42 @@ import main
 
 
 class AnalysisPipelineTests(unittest.TestCase):
+    def test_extraction_result_requires_string_question_and_answer(self):
+        valid = {"speakers": {"Speaker 0": "interviewer"}, "qa_pairs": [{"question": "Q", "answer": "A"}]}
+        self.assertEqual(main._validate_extraction_result(valid)["qa_pairs"], valid["qa_pairs"])
+        for pair, expected in [
+            ({"answer": "A"}, "question 必须是字符串"),
+            ({"question": "Q"}, "answer 必须是字符串"),
+            ({"question": None, "answer": "A"}, "question 必须是字符串"),
+            ({"question": "Q", "answer": None}, "answer 必须是字符串"),
+            ({"question": 11, "answer": "A"}, "question 必须是字符串"),
+            ({"question": "Q", "answer": ["A"]}, "answer 必须是字符串"),
+        ]:
+            with self.subTest(pair=pair), self.assertRaisesRegex(ValueError, expected):
+                main._validate_extraction_result({"speakers": {"Speaker 0": "interviewer"}, "qa_pairs": [pair]})
+
+    def test_extract_json_accepts_fenced_json_and_reports_truncation(self):
+        payload = {"qa_pairs": [{"question": "Q", "answer": "A"}]}
+        self.assertEqual(main.extract_json("```json\n" + json.dumps(payload) + "\n```"), payload)
+        with self.assertRaisesRegex(ValueError, "JSON 输出不完整.*截断"):
+            main.extract_json('{"qa_pairs": [{"question": "Q", "answer": "A"}')
+
+    def test_validated_json_retries_once_then_returns_the_valid_full_result(self):
+        valid = {"speakers": {"Speaker 0": "interviewer"}, "qa_pairs": [{"question": "Q", "answer": "A"}]}
+        with patch.object(main, "call_llm", side_effect=['{"speakers": {}, "qa_pairs": []}', json.dumps(valid)]) as call:
+            result = main._call_validated_json("prompt", "speaker_qa_extraction", main._validate_extraction_result)
+        self.assertEqual(result, valid)
+        self.assertEqual(call.call_count, 2)
+        self.assertTrue(all(item.kwargs["json_mode"] for item in call.call_args_list))
+        self.assertIn("重新完整生成", call.call_args_list[1].args[0])
+
+    def test_validated_json_retry_count_is_bounded(self):
+        invalid = json.dumps({"speakers": {}, "qa_pairs": []})
+        with patch.object(main, "call_llm", return_value=invalid) as call:
+            with self.assertRaisesRegex(ValueError, "2 次尝试后仍无效"):
+                main._call_validated_json("prompt", "speaker_qa_extraction", main._validate_extraction_result)
+        self.assertEqual(call.call_count, 2)
+
     def test_primary_language_uses_dominant_transcript_script(self):
         self.assertEqual(main._detect_primary_language("我负责产品设计，使用 Python 做数据分析"), "Chinese")
         self.assertEqual(main._detect_primary_language("I designed the product and analyzed user feedback"), "English")
@@ -29,6 +65,7 @@ class AnalysisPipelineTests(unittest.TestCase):
             self.assertIn(expected, prompt)
             self.assertIn("先提及 1–2 个有具体证据的跨题优点", prompt)
             self.assertIn("严格按顺序", prompt)
+            self.assertIn("每一项都必须同时包含 question 和 answer", call.call_args_list[0].args[0])
 
     def test_role_extraction_and_qa_extraction_use_one_call(self):
         extraction = {
@@ -50,11 +87,11 @@ class AnalysisPipelineTests(unittest.TestCase):
         with patch.object(main, "call_llm", return_value=json.dumps({"speakers": {}, "qa_pairs": []})) as call:
             with self.assertRaisesRegex(ValueError, "speakers"):
                 main.analyze_interview("面试转录")
-        self.assertEqual(call.call_count, 1)
+        self.assertEqual(call.call_count, 2)
 
     def test_invalid_analysis_output_is_rejected(self):
         extraction = {"speakers": {"Speaker 0": "interviewer"}, "qa_pairs": []}
-        with patch.object(main, "call_llm", side_effect=[json.dumps(extraction), json.dumps({"qa_analysis": "invalid"})]):
+        with patch.object(main, "call_llm", side_effect=[json.dumps(extraction), json.dumps({"qa_analysis": "invalid"}), json.dumps({"qa_analysis": "invalid"})]):
             with self.assertRaisesRegex(ValueError, "qa_analysis"):
                 main.analyze_interview("面试转录")
 
@@ -262,7 +299,8 @@ class CoachContextTests(unittest.TestCase):
                 "answer": "I first reviewed the user feedback and then proposed a solution.",
             }},
         }
-        (_, _body), call = self.run_coach(payload, delta)
+        with self.assertLogs(main.logger, level="INFO") as captured:
+            (_, _body), call = self.run_coach(payload, delta)
         prompt = call.call_args.kwargs["messages"][0]["content"]
         self.assertIn("本次面试的主要语言是 English", prompt)
         self.assertIn("建议和示例也必须遵循此语言", prompt)
